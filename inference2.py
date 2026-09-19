@@ -22,6 +22,7 @@ import look2hear.models
 import warnings
 from rich import print
 from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+from metadata_utils import copy_metadata
 
 SEGMENT_SECONDS = 10  # length of each segment in seconds
 OVERLAP_SECONDS = 1   # overlap to ensure no gaps (kan justeras)
@@ -158,6 +159,13 @@ def main(input_file, output_file):
         output_audio = process_segments(model, audio, samplerate, track_name)
         # Save output
         save_audio(output_file, output_audio, samplerate)
+        # Persist tags (title/artist/album/...) so restoring audio doesn't
+        # erase what a music library sorts by; a failure here shouldn't
+        # discard an already-successful restoration.
+        try:
+            copy_metadata(input_file, output_file)
+        except Exception as e:
+            print(f"[yellow]![/yellow] Could not copy metadata for {os.path.basename(output_file)}: {e}")
     finally:
         # Always delete the temporary WAV file, even if inference raised,
         # so a crash never leaves it behind for a later run to pick up.
