@@ -8,7 +8,7 @@ if not exist output (
 )
 
 REM List of supported extensions
-set EXTENSIONS=mp3 m4a wav aiff aif flac
+set EXTENSIONS=mp3 m4a wav aiff aif flac opus
 
 REM Loop over each extension
 for %%e in (%EXTENSIONS%) do (
