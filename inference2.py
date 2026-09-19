@@ -11,16 +11,27 @@ and is shared under the same CC BY-SA 4.0 terms.
 """
 
 import os
+import subprocess
 import tempfile
 import torch
 import torchaudio
 import argparse
 import look2hear.models
 import warnings
-from pydub import AudioSegment
 
 SEGMENT_SECONDS = 10  # length of each segment in seconds
 OVERLAP_SECONDS = 1   # overlap to ensure no gaps (kan justeras)
+
+# Apollo was trained on 44.1 kHz music, so every input is resampled to that
+# rate before inference regardless of its native rate -- feeding it anything
+# else silently distorts the output rather than erroring.
+TARGET_SAMPLE_RATE = 44100
+
+# ffmpeg's libsoxr isn't compiled into the available build (verified: selecting
+# it raises "Requested resampling engine is unavailable"), so this uses
+# ffmpeg's native swr engine tuned to its highest-quality settings instead:
+# max filter size, max phase shift, and a near-Nyquist cutoff.
+RESAMPLE_FILTER = "aresample=resampler=swr:filter_size=256:phase_shift=24:cutoff=0.98"
 
 # Suppress Torchaudio backend warning
 warnings.filterwarnings(
@@ -29,20 +40,30 @@ warnings.filterwarnings(
     module="torchaudio._backend.utils"
 )
 
-# Load audio, auto-convert MP3/m4a/aiff to WAV
+# Resample to 44.1 kHz via ffmpeg, then load
 def load_audio(file_path, device="cuda"):
-    ext = os.path.splitext(file_path)[1].lower()
-    temp_file = None
-    if ext in ['.mp3', '.m4a', '.aiff', '.aif']:
-        # Written to the OS temp dir, never next to the source file: a leftover
-        # from an interrupted run must never be mistaken for a new input by a
-        # later run's directory scan.
-        fd, temp_file = tempfile.mkstemp(suffix=".wav")
-        os.close(fd)
-        AudioSegment.from_file(file_path).export(temp_file, format="wav")
-        file_path = temp_file
+    # Written to the OS temp dir, never next to the source file: a leftover
+    # from an interrupted run must never be mistaken for a new input by a
+    # later run's directory scan.
+    fd, temp_file = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", file_path,
+             "-af", RESAMPLE_FILTER,
+             "-ar", str(TARGET_SAMPLE_RATE),
+             "-c:a", "pcm_f32le",
+             temp_file],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg resample failed for {file_path}:\n{result.stderr}")
 
-    audio, samplerate = torchaudio.load(file_path)
+        audio, samplerate = torchaudio.load(temp_file)
+    except Exception:
+        os.remove(temp_file)
+        raise
+
     audio = audio.unsqueeze(0)  # [1, 1, samples]
     audio = audio.to(device)
 
@@ -50,7 +71,24 @@ def load_audio(file_path, device="cuda"):
 
 def save_audio(file_path, audio, samplerate=44100):
     audio = audio.squeeze(0).cpu()
-    torchaudio.save(file_path, audio, samplerate)
+    # Write a lossless intermediate WAV, then encode the final MP3 at 320 kbps
+    # via ffmpeg's LAME encoder -- the one deliberately lossy step, done once,
+    # at the end, at the maximum standard MP3 bitrate.
+    fd, temp_wav = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        torchaudio.save(temp_wav, audio, samplerate)
+        result = subprocess.run(
+            ["ffmpeg", "-y", "-i", temp_wav,
+             "-codec:a", "libmp3lame", "-b:a", "320k",
+             file_path],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"ffmpeg mp3 encode failed for {file_path}:\n{result.stderr}")
+    finally:
+        if os.path.exists(temp_wav):
+            os.remove(temp_wav)
 
 def process_segments(model, audio, samplerate, overlap=OVERLAP_SECONDS):
     segment_length = SEGMENT_SECONDS * samplerate
@@ -125,7 +163,7 @@ def main(input_file, output_file):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Inference Script")
     parser.add_argument("--in_wav", type=str, required=True, help="Path to input wav/mp3 file")
-    parser.add_argument("--out_wav", type=str, required=True, help="Path to output wav file")
+    parser.add_argument("--out_mp3", type=str, required=True, help="Path to output mp3 file (320kbps)")
     args = parser.parse_args()
 
-    main(args.in_wav, args.out_wav)
+    main(args.in_wav, args.out_mp3)
