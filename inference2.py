@@ -11,6 +11,7 @@ and is shared under the same CC BY-SA 4.0 terms.
 """
 
 import os
+import tempfile
 import torch
 import torchaudio
 import argparse
@@ -33,7 +34,11 @@ def load_audio(file_path, device="cuda"):
     ext = os.path.splitext(file_path)[1].lower()
     temp_file = None
     if ext in ['.mp3', '.m4a', '.aiff', '.aif']:
-        temp_file = file_path + ".tmp.wav"
+        # Written to the OS temp dir, never next to the source file: a leftover
+        # from an interrupted run must never be mistaken for a new input by a
+        # later run's directory scan.
+        fd, temp_file = tempfile.mkstemp(suffix=".wav")
+        os.close(fd)
         AudioSegment.from_file(file_path).export(temp_file, format="wav")
         file_path = temp_file
 
@@ -103,16 +108,19 @@ def main(input_file, output_file):
     ).to(device)
     model.eval()
 
-    # Load audio
-    audio, samplerate, temp_file = load_audio(input_file, device=device)
-    # Process audio with overlap-and-crop
-    output_audio = process_segments(model, audio, samplerate)
-    # Save output
-    save_audio(output_file, output_audio, samplerate)
-
-    # Delete temporary WAV file if created
-    if temp_file is not None and os.path.exists(temp_file):
-        os.remove(temp_file)
+    temp_file = None
+    try:
+        # Load audio
+        audio, samplerate, temp_file = load_audio(input_file, device=device)
+        # Process audio with overlap-and-crop
+        output_audio = process_segments(model, audio, samplerate)
+        # Save output
+        save_audio(output_file, output_audio, samplerate)
+    finally:
+        # Always delete the temporary WAV file, even if inference raised,
+        # so a crash never leaves it behind for a later run to pick up.
+        if temp_file is not None and os.path.exists(temp_file):
+            os.remove(temp_file)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Inference Script")
