@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import torch
 import torchaudio
+import soundfile as sf
 import argparse
 import look2hear.models
 import warnings
@@ -70,25 +71,14 @@ def load_audio(file_path, device="cuda"):
     return audio, samplerate, temp_file  # return temp file path for cleanup
 
 def save_audio(file_path, audio, samplerate=44100):
-    audio = audio.squeeze(0).cpu()
-    # Write a lossless intermediate WAV, then encode the final MP3 at 320 kbps
-    # via ffmpeg's LAME encoder -- the one deliberately lossy step, done once,
-    # at the end, at the maximum standard MP3 bitrate.
-    fd, temp_wav = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    try:
-        torchaudio.save(temp_wav, audio, samplerate)
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", temp_wav,
-             "-codec:a", "libmp3lame", "-b:a", "320k",
-             file_path],
-            capture_output=True, text=True
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"ffmpeg mp3 encode failed for {file_path}:\n{result.stderr}")
-    finally:
-        if os.path.exists(temp_wav):
-            os.remove(temp_wav)
+    audio = audio.squeeze(0).cpu()  # [channels, samples]
+    # 32-bit float WAV: preserves the model's native float32 output exactly,
+    # with no lossy encoding, no bit-depth quantization, and no further
+    # resampling. torchaudio.save() can't be used for this -- verified that as
+    # of the TorchCodec-backed save(), its `encoding`/`bits_per_sample` args
+    # are silently ignored and it always writes 16-bit PCM regardless of what
+    # is requested -- so this writes directly via soundfile instead.
+    sf.write(file_path, audio.numpy().T, samplerate, subtype="FLOAT")
 
 def process_segments(model, audio, samplerate, overlap=OVERLAP_SECONDS):
     segment_length = SEGMENT_SECONDS * samplerate
@@ -163,7 +153,7 @@ def main(input_file, output_file):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Inference Script")
     parser.add_argument("--in_wav", type=str, required=True, help="Path to input wav/mp3 file")
-    parser.add_argument("--out_mp3", type=str, required=True, help="Path to output mp3 file (320kbps)")
+    parser.add_argument("--out_wav", type=str, required=True, help="Path to output wav file (32-bit float)")
     args = parser.parse_args()
 
-    main(args.in_wav, args.out_mp3)
+    main(args.in_wav, args.out_wav)

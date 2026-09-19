@@ -18,11 +18,11 @@ for %%e in (%EXTENSIONS%) do (
         REM Enable delayed expansion for variable inside loop
         setlocal enabledelayedexpansion
         REM Skip files already processed in a previous run
-        if exist "output\!filename!.mp3" (
-            echo Skipping %%f, output\!filename!.mp3 already exists
+        if exist "output\!filename!.wav" (
+            echo Skipping %%f, output\!filename!.wav already exists
         ) else (
             REM Run the Python inference script
-            python inference2.py --in_wav="%%f" --out_mp3="output\!filename!.mp3"
+            python inference2.py --in_wav="%%f" --out_wav="output\!filename!.wav"
         )
         endlocal
     )
