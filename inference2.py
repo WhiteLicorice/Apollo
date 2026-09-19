@@ -13,12 +13,15 @@ and is shared under the same CC BY-SA 4.0 terms.
 import os
 import subprocess
 import tempfile
+import time
 import torch
 import torchaudio
 import soundfile as sf
 import argparse
 import look2hear.models
 import warnings
+from rich import print
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
 
 SEGMENT_SECONDS = 10  # length of each segment in seconds
 OVERLAP_SECONDS = 1   # overlap to ensure no gaps (kan justeras)
@@ -80,46 +83,56 @@ def save_audio(file_path, audio, samplerate=44100):
     # is requested -- so this writes directly via soundfile instead.
     sf.write(file_path, audio.numpy().T, samplerate, subtype="FLOAT")
 
-def process_segments(model, audio, samplerate, overlap=OVERLAP_SECONDS):
+def process_segments(model, audio, samplerate, track_name, overlap=OVERLAP_SECONDS):
     segment_length = SEGMENT_SECONDS * samplerate
     overlap_length = int(overlap * samplerate)
     hop_length = segment_length - overlap_length
     total_samples = audio.shape[-1]
     output_chunks = []
     cursor = 0
+    total_chunks = -(-total_samples // hop_length)  # ceiling division
 
-    with torch.no_grad():
-        while cursor < total_samples:
-            end = min(cursor + segment_length, total_samples)
-            segment = audio[:, :, cursor:end]
+    with Progress(
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total} chunks"),
+        TimeElapsedColumn(),
+    ) as progress:
+        task = progress.add_task(track_name, total=total_chunks)
+        with torch.no_grad():
+            while cursor < total_samples:
+                end = min(cursor + segment_length, total_samples)
+                segment = audio[:, :, cursor:end]
 
-            # Pad sista segmentet om det är för kort
-            if end - cursor < segment_length:
-                pad_size = segment_length - (end - cursor)
-                segment = torch.nn.functional.pad(segment, (0, pad_size))
+                # Pad sista segmentet om det är för kort
+                if end - cursor < segment_length:
+                    pad_size = segment_length - (end - cursor)
+                    segment = torch.nn.functional.pad(segment, (0, pad_size))
 
-            out = model(segment)
+                out = model(segment)
 
-            # Trimma bort paddingen på sista segmentet
-            if end - cursor < segment_length:
-                out = out[:, :, :end - cursor]
+                # Trimma bort paddingen på sista segmentet
+                if end - cursor < segment_length:
+                    out = out[:, :, :end - cursor]
 
-            # Hantera överlappning
-            if cursor == 0:
-                # Första segmentet: ta allt utom sista overlappen
-                output_chunks.append(out[:, :, :-overlap_length])
-            elif end >= total_samples:
-                # Sista segmentet: ta allt
-                output_chunks.append(out)
-            else:
-                # Mellansegment: ta allt utom sista overlappen
-                output_chunks.append(out[:, :, :-overlap_length])
+                # Hantera överlappning
+                if cursor == 0:
+                    # Första segmentet: ta allt utom sista overlappen
+                    output_chunks.append(out[:, :, :-overlap_length])
+                elif end >= total_samples:
+                    # Sista segmentet: ta allt
+                    output_chunks.append(out)
+                else:
+                    # Mellansegment: ta allt utom sista overlappen
+                    output_chunks.append(out[:, :, :-overlap_length])
 
-            cursor += hop_length
+                cursor += hop_length
+                progress.advance(task)
 
     return torch.cat(output_chunks, dim=-1)
 
 def main(input_file, output_file):
+    start_time = time.time()
     os.environ['CUDA_VISIBLE_DEVICES'] = "0"
     torch.cuda.empty_cache()
 
@@ -141,7 +154,8 @@ def main(input_file, output_file):
         # Load audio
         audio, samplerate, temp_file = load_audio(input_file, device=device)
         # Process audio with overlap-and-crop
-        output_audio = process_segments(model, audio, samplerate)
+        track_name = os.path.basename(input_file)
+        output_audio = process_segments(model, audio, samplerate, track_name)
         # Save output
         save_audio(output_file, output_audio, samplerate)
     finally:
@@ -149,6 +163,9 @@ def main(input_file, output_file):
         # so a crash never leaves it behind for a later run to pick up.
         if temp_file is not None and os.path.exists(temp_file):
             os.remove(temp_file)
+
+    elapsed = time.time() - start_time
+    print(f"[green]✓[/green] {os.path.basename(output_file)} restored in {elapsed:.1f}s")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Audio Inference Script")
