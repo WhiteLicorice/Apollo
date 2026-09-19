@@ -1,6 +1,14 @@
+# Claude Code artifacts
+.claude
+AGENTS.md
+CLAUDE.md
+
 *.pyc
 *.DS_Store
 .venv/
+
+# Downloaded checkpoint (fetch via: huggingface-cli download JusperLee/Apollo --local-dir Apollo)
+/Apollo/
 /models/
 /smoke_test_output/
 /output.wav
