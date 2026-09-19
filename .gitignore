@@ -1,3 +1,7 @@
+# Input / Output
+input/
+output/
+
 # Claude Code artifacts
 .claude
 AGENTS.md
